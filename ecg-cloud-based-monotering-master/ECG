@@ -1,0 +1,147 @@
+/*
+* The following code uses Analog input A1 of the MSP432 to read the output from the AD620
+instrumentation amplifier
+* The data is sampled at approimately 33.33Hz and thresholding is done to detect peaks in the
+QRS complex of the ecg signal
+* Each detected peak is couunted as a beat
+* The detected beats are sent to the ubidots mqtt broker where a graph displays the heart
+rate of the person
+*/
+#include <SPI.h>
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include<stdio.h>
+// your network name also called SSID
+char ssid[] = "BsDx-bWF6enk";
+// your network password
+char password[] = "mazzy0593";
+#define TOKEN "BBFF-bE4HPwB2L1xLElHjmgXCqTCkIS9FE5" // Put your Ubidots' TOKEN
+#define MQTT_CLIENT_NAME "myecgsensor" // MQTT client Name, please enter
+your own 8-12 alphanumeric character ASCII string;
+// MQTTServer to use
+char server[] = "industrial.api.ubidots.com";
+/****************************************
+ Define Constants
+****************************************/
+#define VARIABLE_LABEL "sensor" // Assing the variable label
+#define DEVICE_LABEL "esp32" // Assig the device label
+#define SENSOR A1 // Set the A1 pin as ecg input to adc
+char payload[100];//holds our data to be published
+char topic[150];//topic data is published
+// Space to store values to send
+char str_sensor[10]; //buffer to append our data to be sent to server
+unsigned long heartRateTime = 0;//timer for calculation of heart beat
+WiFiClient wifiClient;//instance of class wifiClient
+PubSubClient client(server, 1883, callback, wifiClient);//defines our mqtt connection
+24
+void callback(char* topic, byte* payload, unsigned int length) {//callback function when data
+is received
+ char p[length + 1];
+ memcpy(p, payload, length);
+ p[length] = NULL;
+ Serial.write(payload, length);
+ Serial.println(topic);
+}
+void setup()
+{
+ Serial.begin(115200);//enabling serial communication at 115200 baud rate
+ pinMode(SENSOR, INPUT);//defines our ecg pin as input
+ // attempt to connect to Wifi network:
+ Serial.print("Attempting to connect to Network named: ");
+ // print the network name (SSID);
+ Serial.println(ssid);
+ // Connect to WPA/WPA2 network. Change this line if using open or WEP network:
+ WiFi.begin(ssid, password); //connect to wifi router
+ while ( WiFi.status() != WL_CONNECTED) {//waits till we're connected
+ // print dots while we wait to connect
+ Serial.print(".");
+ delay(300);
+ }
+ Serial.println("\nYou're connected to the network");
+ Serial.println("Waiting for an ip address");
+ while (WiFi.localIP() == INADDR_NONE) {
+ // print dots while we wait for an ip addresss
+ Serial.print(".");
+ delay(300);
+ }
+ Serial.println("\nIP Address obtained");
+ // We are connected and have an IP address.
+ // Print the WiFi status.
+ printWifiStatus();//prints out IP address allocated and signal strength
+}
+void reconnect() {//manages reconnection/connection to server if we're disconnected
+ // Loop until we're reconnected
+ while (!client.connected()) {
+ Serial.println("Attempting MQTT connection...");
+ // Attemp to connect
+ if (client.connect(MQTT_CLIENT_NAME, TOKEN, "")) {//sends MQTT connect message
+ Serial.println("Connected");
+ } else {
+ Serial.print("Failed, rc=");
+ Serial.print(client.state());
+ Serial.println(" try again in 2 seconds");
+ // Wait 2 seconds before retrying
+ delay(2000);
+ }
+ }
+}
+unsigned long lastConnTime = 0; // Track the last update time
+25
+bool TimeSpent(unsigned long prevTime, unsigned long value) {//returns true when the
+comparision between current time is greater that time to be checked
+ bool returnVal = false;
+ returnVal = ((millis() - prevTime) > value) ? true : false;//use of a ternery operator
+ return returnVal;
+}
+float beats = 0;
+void loop()
+{
+ // Reconnect if the connection was lost
+ if (!client.connected() && TimeSpent(lastConnTime, 5000)) { //check if we're connected, if
+not try to reconnect
+ //timespent does a reconnection every 5000 if we're disconnected to take care that the
+reconnection is not done continously
+ reconnect();
+ lastConnTime = millis();//save last connection time
+ }
+ sprintf(topic, "%s%s", "/v1.6/devices/", DEVICE_LABEL);//forming data JSON
+ sprintf(payload, "%s", ""); // Cleans the payload
+ sprintf(payload, "{\"%s\":", VARIABLE_LABEL); // Adds the variable label
+ float myecg = analogRead(SENSOR);//reading input from AD620 into our adc
+ // Serial.println(myecg);//plots out the ecg signal received on our adc pin
+ if (myecg > 732) { //thresholding to measure a peak in the QRS complex
+ beats += 1; //if peak detected, count it as a beat
+ Serial.println("Peak");
+ }
+ if (TimeSpent(heartRateTime, 60000)) { //if 1 minute is passed, publish the value of heart
+beat and reset our variable to 0. This helps us get the BPM
+ Serial.println("Publishing data to Ubidots Cloud");
+ Serial.println(beats);
+ /* 4 is mininum width, 2 is precision; float value is copied onto str_sensor*/
+ dtostrf(beats, 4, 2, str_sensor);
+ sprintf(payload, "%s {\"value\": %s}}", payload, str_sensor); // Adds heart beat data in
+our JSON payload to be sent to the server
+ client.publish(topic, payload);//publish heart beat data to the server
+ beats = 0;
+ heartRateTime = millis();//saving time of last sent heart beat
+ }
+ delay(30);//sample at approximately every 30ms approx 33.33Hz sampling frequency
+ //note this is approximate as the functions for maintaing server connection are non-blocking
+and take processor time
+ //also, the delay function is not very accurate and tends to have a small drift, the timer
+can be used instead
+}
+void printWifiStatus() {
+ // print the SSID of the network you're attached to:
+ Serial.print("SSID: ");
+ Serial.println(WiFi.SSID());
+ // print your WiFi IP address:
+ IPAddress ip = WiFi.localIP();
+ Serial.print("IP Address: ");
+ Serial.println(ip);
+ // print the received signal strength:
+ long rssi = WiFi.RSSI();
+ Serial.print("signal strength (RSSI):");
+ Serial.print(rssi);
+ Serial.println(" dBm");
+}
